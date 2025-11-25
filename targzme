@@ -1,5 +1,4 @@
 #!/bin/bash
-# Recursively finds sub-folders, compresses them, and optionally deletes originals.
 
 
 show_help() {
@@ -31,7 +30,6 @@ FOLDER_PATTERN=""
 START_DIR_ARG=""
 SHOULD_DELETE=false
 DRY_RUN=false
-FOUND_COUNT=0
 
 
 # Parse Arguments
@@ -79,8 +77,8 @@ fi
 
 if [ -z "$START_DIR_ARG" ]; then
     START_DIR="."
-else
-    START_DIR="$START_DIR_ARG"
+else  # The argument itself, or "." if it's an empty string
+    START_DIR="${START_DIR_ARG:-.}"
 fi
 
 if [ ! -d "$START_DIR" ]; then
