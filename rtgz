@@ -1,0 +1,183 @@
+#!/bin/bash
+
+VERSION="1.1.0"
+TEMP_FILE_LIST=""
+
+if [ -t 1 ]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    NC='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; NC=''
+fi
+
+log_info()  { echo -e "${NC}$1"; }
+log_ok()    { echo -e "  ${GREEN}$1${NC}"; }
+log_warn()  { echo -e "  ${YELLOW}!!! WARNING: $1${NC}"; }
+log_err()   { echo -e "  ${RED}!!! ERROR: $1${NC}"; }
+
+die() {
+    echo -e "${RED}!!! FATAL: $1${NC}" >&2
+    exit 1
+}
+
+cleanup() {
+    if [[ -n "$TEMP_FILE_LIST" && -f "$TEMP_FILE_LIST" ]]; then
+        rm -f "$TEMP_FILE_LIST"
+    fi
+}
+trap cleanup EXIT
+
+show_help() {
+    echo ""
+    echo "Usage:    $(basename "$0") \"<pattern>\" [start_dir] [OPTIONS]"
+    echo ""
+    echo "Description:"
+    echo "  Finds matching subfolders and compresses them."
+    echo "  Alternatively it groups and compresses files with the -f option."
+    echo ""
+    echo "Options:"
+    echo "  -f, --file      Group and compress files instead of folders."
+    echo "  -d, --delete    Delete original items after successful compression."
+    echo "  -t, --test      Test mode, lists actions but takes NO action."
+    echo "  -v, --version   Show current version."
+    echo "  -h, --help      Show this help message."
+    echo ""
+}
+
+get_clean_archive_name() {
+    local pattern="$1"
+    local clean=$(echo "$pattern" | tr -d '*?' | sed 's/^\.*//')
+    echo "${clean:-files}"
+}
+
+list_directories_with_matches() {
+    local base_dir="$1"
+    local pattern="$2"
+    find "$base_dir" -type f -name "$pattern" -printf "%h\n" | sort -u
+}
+
+process_file_mode() {
+    local start_dir="$1"
+    local pattern="$2"
+    local archive_base="$3"
+
+    list_directories_with_matches "$start_dir" "$pattern" | while read -r dir_path; do
+
+        TEMP_FILE_LIST=$(mktemp)
+        
+        find "$dir_path" -maxdepth 1 -type f -name "$pattern" ! -name "$archive_base.tar.gz" -printf "%f\0" > "$TEMP_FILE_LIST"
+
+        local count=$(grep -z -c . "$TEMP_FILE_LIST")
+        if [ "$count" -eq 0 ]; then continue; fi
+
+        log_info "Found $count files in: $dir_path"
+
+        if [ "$TEST_MODE" = true ]; then
+            continue
+        fi
+
+        if (cd "$dir_path" && tar -czf "$archive_base.tar.gz" --null -T "$TEMP_FILE_LIST"); then
+            log_ok "Compressed"
+
+            if [ "$DELETE_MODE" = true ]; then
+                if (cd "$dir_path" && xargs -0 rm < "$TEMP_FILE_LIST"); then
+                    log_ok "Deleted originals"
+                else
+                    log_warn "Failed to delete some files"
+                fi
+            fi
+        else
+            log_err "Failed to compress in $dir_path"
+        fi
+        
+        rm -f "$TEMP_FILE_LIST"
+    done
+}
+
+process_folder_mode() {
+    local start_dir="$1"
+    local pattern="$2"
+    local abs_start_path="$3"
+
+    find "$start_dir" -type d -name "$pattern" -prune 2>/dev/null | while IFS= read -r dir_path; do
+        
+        local abs_found_path=$(cd "$dir_path" 2>/dev/null && pwd)
+        if [[ "$abs_start_path" == "$abs_found_path" ]]; then continue; fi
+        if [[ "$dir_path" == "." || "$dir_path" == "/" ]]; then continue; fi
+
+        log_info "Found: $dir_path"
+
+        if [ "$TEST_MODE" = true ]; then continue; fi
+
+        local parent_dir=$(dirname "$dir_path")
+        local actual_dir_name=$(basename "$dir_path")
+        local archive_name="$parent_dir/$actual_dir_name.tar.gz"
+
+        if tar -czf "$archive_name" -C "$parent_dir" "$actual_dir_name"; then
+            log_ok "Compressed"
+            if [ "$DELETE_MODE" = true ]; then
+                if rm -rf "$dir_path"; then
+                     log_ok "Deleted original"
+                else
+                     log_warn "Deletion failed for $dir_path"
+                fi
+            fi
+        else
+            log_err "Failed to compress $dir_path"
+        fi
+    done
+}
+
+TARGET_PATTERN=""
+START_DIR_ARG=""
+DELETE_MODE=false
+TEST_MODE=false
+FILE_MODE=false
+
+if [ $# -eq 0 ]; then show_help; exit 0; fi
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)    show_help; exit 0 ;;
+        -v|--version) echo "$VERSION"; exit 0 ;;
+        -d|--delete)  DELETE_MODE=true ;;
+        -t|--test)    TEST_MODE=true ;;
+        -f|--file)    FILE_MODE=true ;;
+        -*)           die "Unknown option: $1" ;;
+        *)
+            if [ -z "$TARGET_PATTERN" ]; then TARGET_PATTERN="$1"
+            elif [ -z "$START_DIR_ARG" ]; then START_DIR_ARG="$1"
+            else die "Too many arguments. Are you using a regex? Remember to use 'quotes'."; fi
+            ;;
+    esac
+    shift
+done
+
+if [ -z "$TARGET_PATTERN" ]; then die "No pattern provided."; fi
+
+START_DIR="${START_DIR_ARG:-.}"
+if [ ! -d "$START_DIR" ]; then die "Directory '$START_DIR' not found."; fi
+
+ABS_START_PATH=$(cd "$START_DIR" 2>/dev/null && pwd)
+CLEAN_NAME=$(get_clean_archive_name "$TARGET_PATTERN")
+
+echo ""
+echo "Target:       '$TARGET_PATTERN'"
+echo "Path:         '$ABS_START_PATH'"
+if [ "$FILE_MODE" = true ]; then
+    echo "Compressing:  files (as $CLEAN_NAME.tar.gz)"
+else
+    echo "Compressing:  folders"
+fi
+echo "Action:       $( [ "$TEST_MODE" = true ] && echo "testing" || ([ "$DELETE_MODE" = true ] && echo "compress & delete" || echo "compress & keep") )"
+echo ""
+
+if [ "$FILE_MODE" = true ]; then
+    process_file_mode "$START_DIR" "$TARGET_PATTERN" "$CLEAN_NAME"
+else
+    process_folder_mode "$START_DIR" "$TARGET_PATTERN" "$ABS_START_PATH"
+fi
+
+echo ""
