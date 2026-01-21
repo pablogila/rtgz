@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 TEMP_FILE_LIST=""
 
 if [ -t 1 ]; then
@@ -171,7 +171,15 @@ if [ "$FILE_MODE" = true ]; then
 else
     echo "Compressing:  folders"
 fi
-echo "Action:       $( [ "$TEST_MODE" = true ] && echo "testing" || ([ "$DELETE_MODE" = true ] && echo "compress & delete" || echo "compress & keep") )"
+if [ "$DELETE_MODE" = true ]; then
+    echo "Action:       compress & delete"
+else
+    echo "Action:       compress & keep"
+fi
+if [ "$TEST_MODE" = true ]; then
+    echo ""
+    log_ok "Testing mode, no changes applied"
+fi
 echo ""
 
 if [ "$FILE_MODE" = true ]; then
